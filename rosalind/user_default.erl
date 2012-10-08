@@ -1,8 +1,217 @@
 -module(user_default).
 
 -export([
-    count_nuc/1, rna_trans/1, rev_comp/1, count_point_mut/2, pro_trans/1
+    count_nuc/1, rna_trans/1, rev_comp/1, count_point_mut/2, pro_trans/1,
+    find_motif/2, cons_and_prof/1, gc_content/1
 ]).
+
+-define(FORMAT_LIST(L), [io:format("~p ", [P]) || P <- L], io:format("~n")).
+
+% GC Content
+% http://rosalind.info/problems/gc/
+% Read a file in FASTA format and return the GC content of the highest
+% string:
+%
+% >Name1
+% ACGT...
+% ACGT...
+% >Name2
+% TCGA...
+%
+% Return:
+% NameM
+% XX.YY%
+gc_content(Filename) ->
+    {ok, Handle} = file:open(Filename, read),
+    Fasta = read_fasta(Handle),
+    file:close(Handle),
+    {Name, GC} = compute_max_gc(Fasta, {none, 0}),
+    io:format("~s~n~p%~n", [Name, GC]).
+
+compute_max_gc([], {Name, Value}) ->
+    {Name, erlang:round(Value * 10000) / 100};
+compute_max_gc([{Name, DnaString}|Tail], {MaxName, MaxValue}) ->
+    GcValue = compute_gc(DnaString),
+    NextMax = case (GcValue > MaxValue) of
+        true ->
+            {Name, GcValue};
+        _ ->
+            {MaxName, MaxValue}
+    end,
+    compute_max_gc(Tail, NextMax).
+
+compute_gc(S) ->
+    {_A, C, G, _T} = count_nuc(list_to_binary(S), {0, 0, 0, 0}),
+    L = length(S),
+    (G + C) / L.
+
+% Return tuples of {Name, DNA_String}.
+read_fasta(Handle) ->
+    lists:reverse(read_fasta(Handle, {}, [])).
+
+read_fasta(Handle, {}, Acc) ->
+    case file:read_line(Handle) of
+        {ok, [S|Tail]} ->
+            case S of
+                $> ->
+                    % This line contains a name.
+                    read_fasta(Handle, {string:strip(Tail, right, $\n), []}, Acc);
+                _ ->
+                    {error, unexpected_value}
+            end;
+        _ ->
+            {error, invalid_format1}
+    end;
+read_fasta(Handle, {Name, DNA}, Acc) ->
+    case file:read_line(Handle) of
+        {ok, Data} ->
+            [S|Tail] = Data,
+            case S of
+                $> ->
+                    Tuple = {Name, lists:flatten(lists:reverse(DNA))},
+                    read_fasta(Handle, {string:strip(Tail, right, $\n), []}, [Tuple|Acc]);
+                _ ->
+                    read_fasta(Handle, {Name, [string:strip(Data, right, $\n)|DNA]}, Acc)
+            end;
+        eof ->
+            Tuple = {Name, lists:flatten(lists:reverse(DNA))},
+            [Tuple|Acc];
+        _ ->
+            {error, invalid_format2}
+    end.
+
+% Consensus and Profile
+% http://rosalind.info/problems/cons/
+%
+% Build a profile matrix and consensus string from a set of strings.
+% Each string has length N.  The profile matrix has dimensions 4 x N.
+% Each element of the matrix contains the number of times the given
+% letter (A, T, C, G) is found at that position in the set of strings.
+% The output should look like:
+%
+% <consensus string>
+% A: . . . 
+% C: . . . 
+% G: . . . 
+% T: . . . 
+%
+% The consensus string has length N and contains the most common symbol
+% at each position.  There can be multiple consensus strings for each 
+% set of input strings.  Return at least one.
+cons_and_prof(Strings) ->
+    N = length(lists:nth(1, Strings)),
+    {A, C, G, T} = profile_matrix(Strings, N, {[], [], [], []}),
+    Cons = consensus({A, C, G, T}, []),
+    io:format("~s~n", [Cons]),
+    io:format("A: "),
+    ?FORMAT_LIST(A),
+    io:format("C: "),
+    ?FORMAT_LIST(C),
+    io:format("G: "),
+    ?FORMAT_LIST(G),
+    io:format("T: "),
+    ?FORMAT_LIST(T).
+
+profile_matrix(_, 0, Mx) ->
+    Mx;
+profile_matrix(Strings, N, {A, C, G, T}) ->
+    CA = occurs_at_pos($A, Strings, N),
+    CC = occurs_at_pos($C, Strings, N),
+    CG = occurs_at_pos($G, Strings, N),
+    CT = occurs_at_pos($T, Strings, N),
+    profile_matrix(Strings, N-1, {[CA|A], [CC|C], [CG|G], [CT|T]}).
+
+consensus({[], [], [], []}, Acc) ->
+    lists:reverse(Acc);
+consensus({[A|ARest], [C|CRest], [G|GRest], [T|TRest]}, Acc) ->
+    M1 = max_term({A, "A"}, {C, "C"}),
+    M2 = max_term(M1, {G, "G"}),
+    {_, S} = max_term(M2, {T, "T"}),
+    consensus({ARest, CRest, GRest, TRest}, [S|Acc]).
+    
+max_term({A, AD}, {B, BD}) ->
+    case erlang:max(A, B) of
+        A ->
+            {A, AD};
+        B ->
+            {B, BD}
+    end.
+
+% Count occurrences of Symbol at position N across each string in Strings.
+occurs_at_pos(Symbol, Strings, N) ->
+    F = 
+    fun(String, Count) ->
+        case lists:nth(N, String) of
+            Symbol ->
+                Count+1;
+            _ ->
+                Count
+        end
+    end,
+    lists:foldl(F, 0, Strings).
+
+% Finding a Motif in DNA
+% http://rosalind.info/problems/subs/
+% Find positions of T in S (1-indexed).
+find_motif(T, S) when is_list(T), is_list(S) ->
+    find_motif(list_to_binary(T), list_to_binary(S));
+find_motif(T, S) when is_binary(T), is_binary(S), size(T) =< size(S) ->
+    L = find_motif_at(T, S, 1, []),
+    ?FORMAT_LIST(L).
+
+% Call do_find_motif for every value in S.
+find_motif_at(_, <<>>, _, Acc) ->
+    lists:reverse(Acc);
+find_motif_at(T, S, Pos, Acc) ->
+    Acc2 = case do_find_motif(T, S) of
+        true ->
+            [Pos|Acc];
+        _ ->
+            Acc
+    end,
+    <<_:8, Rest/binary>> = S,
+    find_motif_at(T, Rest, Pos+1, Acc2).
+
+do_find_motif(<<>>, _) ->
+    true;
+do_find_motif(<<T:8, TRest/binary>>, <<S:8, SRest/binary>>) when T =:= S ->
+    do_find_motif(TRest, SRest);
+do_find_motif(_, _) ->
+    false.
+
+%    find_motif(T, S, T, 1, S, 1, 0, S, []).
+%
+%% Match attempt on first position.
+%find_motif(T, S, <<TN:8>>, 1, <<SN:8, SRest/binary>>, SI, _SStart, _SRestAtStart, Found) when TN =:= SN ->
+%    find_motif(T, S, T, 1, SRest, SI+1, 0, SRest, [SI|Found]);
+%
+%% First position match of this attempt: T[1] =:= S[SI]
+%% This call sets up the SRestAtStart value which is needed when attempting after a failed match.
+%find_motif(T, S, <<TN:8, TRest/binary>>, 1, <<SN:8, SRest/binary>>, SI, _SStart, _SRestAtStart, Found) when TN =:= SN ->
+%    io:format("1: ~p ~p ~p ~p~n", [TN, TRest, SN, SRest]),
+%    find_motif(T, S, TRest, 2, SRest, SI+1, SI, SRest, Found);
+%
+%% This attempt is a match.  Start another attempt at SSTart+1
+%find_motif(T, S, <<TN:8>>, _TI, <<SN:8, SRest/binary>>, _SI, SStart, SRestAtStart, Found) when TN =:= SN ->
+%    io:format("2: ~p <<>> ~p ~p~n", [TN, SN, SRest]),
+%    find_motif(T, S, T, 1, SRestAtStart, SStart+1, 0, SRest, [SStart|Found]);
+%
+%% Another position match of this attempt: T[TI] =:= S[SI]
+%find_motif(T, S, <<TN:8, TRest/binary>>, TI, <<SN:8, SRest/binary>>, SI, SStart, SRestAtStart, Found) when TN =:= SN ->
+%    io:format("3: ~p ~p ~p ~p~n", [TN, TRest, SN, SRest]),
+%    find_motif(T, S, TRest, TI+1, SRest, SI+1, SStart, SRestAtStart, Found);
+%
+%% No match.  Start another attempt at SStart+1.
+%find_motif(T, S, TRest, TI, <<_:8, SRest/binary>>, SI, SStart, _, Found) ->
+%    io:format("4: ~p ~p ~p ~p~n", [TI, TRest, SI, SRest]),
+%    find_motif(T, S, T, 1, SRest, SStart+1, SStart+1, SRest, Found);
+%
+%% Done searching.
+%find_motif(_, _, TRest, TI, <<>>, SI, _, _, Found) ->
+%    Found;
+%
+%find_motif(_, _, TRest, TI, SRest, SI, _, _, Found) ->
+%    {error, TRest, TI, SRest, SI, Found}.
 
 % Protein Translation
 % http://rosalind.info/problems/prot/
