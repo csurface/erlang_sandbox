@@ -2,7 +2,119 @@
 
 -compile(export_all).
 
+-include("rna.hrl").
+
 -define(FORMAT_LIST(L), [io:format("~p ", [P]) || P <- L], io:format("~n")).
+
+render_list([]) ->
+    io:format("~n");
+render_list([H|T]) when is_binary(H) ->
+    render_list([binary_to_list(H)|T]);
+render_list([H|T]) when is_list(H) ->
+    io:format("~s~n", [H]),
+    render_list(T);
+render_list([H|T]) ->
+    io:format("~p~n", [H]),
+    render_list(T).
+
+dedupe(L) ->
+    Map = [],
+    dedupe(L, Map).
+
+dedupe([], Map) ->
+    [E || {E, _} <- Map];
+dedupe([H|T], Map) ->
+    Map2 = case proplists:get_value(H, Map) of
+        undefined ->
+            [{H,ignored}|Map];
+        _ ->
+            Map
+    end,
+    dedupe(T, Map2).
+
+% Enumerating Gene Orders
+% http://rosalind.info/problems/perm/
+% Given N <= 7, return the total number of permutations.
+% Also list each permutation.
+% M
+% 1 2 3 ...
+% 1 3 2 ...
+% ...
+list_perm(N) when N > 0 ->
+    list_perm(N, []);
+
+perm(N) when N > 0 ->
+    perm(N, 1).
+
+perm(1, Acc) ->
+    Acc;
+perm(N, Acc) ->
+    perm(N-1, N * Acc).
+
+% Open Reading Frames
+% http://rosalind.info/problems/orf/
+% Given a DNA string, transcribe to RNA and search for any
+% candidate proteins.  They begin with a start codon (AUG = M)
+% and end with a Stop. 
+find_candidate_proteins(S) when is_list(S) ->
+    find_candidate_proteins(list_to_binary(S));
+find_candidate_proteins(B) when is_binary(B) ->
+    Rna = rna:transcribe_rna(B),
+    RevRna = rna:rev_comp(Rna),
+    ShiftedRna = shifted(Rna, 3),
+    ShiftedRevRna = shifted(RevRna, 3),
+    AllRna = lists:append(ShiftedRna, ShiftedRevRna),
+    %io:format("~p~n", [All]),
+    AllCandidates = find_all_candidates(AllRna, []),
+    dedupe(AllCandidates).
+
+find_all_candidates([], Acc) ->
+    Acc;
+find_all_candidates([Rna|Tail], Acc) ->
+    % This is not a protein because it may contain multiple start and stop codons.
+    Trans = rna:translate_codon_to_protein(Rna),
+    Acc2 = collect_candidates(Trans, Acc),
+    find_all_candidates(Tail, Acc2).
+
+% Find all possible start to stop strings.  Note that hese strings can overlap
+% such that multiple starts can appear before a stop.
+collect_candidates(<<>>, Acc) ->
+    Acc;
+collect_candidates(Trans, Acc) ->
+    % Trans is not a protein.  It is simply a string of amino acid symbols.
+    Acc2 = do_collect_candidate(Trans, undefined, Acc),
+    <<_:8, Rest/binary>> = Trans,
+    collect_candidates(Rest, Acc2).
+
+% Collect a candidate from the first start symbol to the first stop.
+do_collect_candidate(<<>>, _, Acc) ->
+    Acc;
+do_collect_candidate(<<?StartAA, Rest/binary>>, undefined, Acc) ->
+    do_collect_candidate(Rest, <<?StartAA>>, Acc);
+do_collect_candidate(<<?StartAA, Rest/binary>>, Candidate, Acc) ->
+    do_collect_candidate(Rest, <<Candidate/binary, ?StartAA>>, Acc);
+do_collect_candidate(<<?StopAA, Rest/binary>>, undefined, Acc) ->
+    do_collect_candidate(Rest, undefined, Acc);
+do_collect_candidate(<<?StopAA, _Rest/binary>>, Candidate, Acc) ->
+    [Candidate|Acc];
+do_collect_candidate(<<_AA:8, Rest/binary>>, undefined, Acc) ->
+    do_collect_candidate(Rest, undefined, Acc);
+do_collect_candidate(<<AA:8, Rest/binary>>, <<Candidate/binary>>, Acc) ->
+    do_collect_candidate(Rest, <<Candidate/binary, AA>>, Acc).
+
+% Return N strings representing S shifted left 0 to N-1 positions.
+% Note that the shifted symbols left of the new start index are
+% dropped from the string.
+shifted(S, N) when is_list(S) ->
+    shifted(list_to_binary(S), N);
+shifted(B, N) when is_binary(B) ->
+    shifted(B, 1, N, []).
+
+shifted(_, I, N, Acc) when I > N ->
+    Acc;
+shifted(Bin, I, N, Acc) ->
+    <<_:8, Rest/binary>> = Bin,
+    shifted(Rest, I+1, N, [Bin|Acc]).
 
 % Finding a Shared Motif
 % http://rosalind.info/problems/lcs/
@@ -300,44 +412,10 @@ do_find_motif(<<T:8, TRest/binary>>, <<S:8, SRest/binary>>) when T =:= S ->
 do_find_motif(_, _) ->
     false.
 
-%    find_motif(T, S, T, 1, S, 1, 0, S, []).
-%
-%% Match attempt on first position.
-%find_motif(T, S, <<TN:8>>, 1, <<SN:8, SRest/binary>>, SI, _SStart, _SRestAtStart, Found) when TN =:= SN ->
-%    find_motif(T, S, T, 1, SRest, SI+1, 0, SRest, [SI|Found]);
-%
-%% First position match of this attempt: T[1] =:= S[SI]
-%% This call sets up the SRestAtStart value which is needed when attempting after a failed match.
-%find_motif(T, S, <<TN:8, TRest/binary>>, 1, <<SN:8, SRest/binary>>, SI, _SStart, _SRestAtStart, Found) when TN =:= SN ->
-%    io:format("1: ~p ~p ~p ~p~n", [TN, TRest, SN, SRest]),
-%    find_motif(T, S, TRest, 2, SRest, SI+1, SI, SRest, Found);
-%
-%% This attempt is a match.  Start another attempt at SSTart+1
-%find_motif(T, S, <<TN:8>>, _TI, <<SN:8, SRest/binary>>, _SI, SStart, SRestAtStart, Found) when TN =:= SN ->
-%    io:format("2: ~p <<>> ~p ~p~n", [TN, SN, SRest]),
-%    find_motif(T, S, T, 1, SRestAtStart, SStart+1, 0, SRest, [SStart|Found]);
-%
-%% Another position match of this attempt: T[TI] =:= S[SI]
-%find_motif(T, S, <<TN:8, TRest/binary>>, TI, <<SN:8, SRest/binary>>, SI, SStart, SRestAtStart, Found) when TN =:= SN ->
-%    io:format("3: ~p ~p ~p ~p~n", [TN, TRest, SN, SRest]),
-%    find_motif(T, S, TRest, TI+1, SRest, SI+1, SStart, SRestAtStart, Found);
-%
-%% No match.  Start another attempt at SStart+1.
-%find_motif(T, S, TRest, TI, <<_:8, SRest/binary>>, SI, SStart, _, Found) ->
-%    io:format("4: ~p ~p ~p ~p~n", [TI, TRest, SI, SRest]),
-%    find_motif(T, S, T, 1, SRest, SStart+1, SStart+1, SRest, Found);
-%
-%% Done searching.
-%find_motif(_, _, TRest, TI, <<>>, SI, _, _, Found) ->
-%    Found;
-%
-%find_motif(_, _, TRest, TI, SRest, SI, _, _, Found) ->
-%    {error, TRest, TI, SRest, SI, Found}.
-
 % Protein Translation
 % http://rosalind.info/problems/prot/
 pro_trans(S) ->
-    rna:translate_codon_to_protein(S).
+    binary_to_list(rna:translate_codon_to_protein(S)).
 
 % Counting Point Mutations
 % http://rosalind.info/problems/hamm/
@@ -388,22 +466,6 @@ rev_comp(<<"G", Rest/binary>>, <<RC/binary>>) ->
 %    <<"C">>;
 %complement(_) ->
 %    {error, invalid}.
-
-% RNA Transcription
-% http://rosalind.info/problems/rna/
-% Transcribe T to U.
-rna_trans(S) when is_list(S) ->
-    rna_trans(list_to_binary(S));
-rna_trans(B) when is_binary(B) ->
-    Trans = rna_trans(B, <<>>),
-    binary_to_list(Trans).
-
-rna_trans(<<>>, Trans) ->
-    Trans;
-rna_trans(<<"T", Rest/binary>>, <<Trans/binary>>) ->
-    rna_trans(Rest, <<Trans/binary, "U">>);
-rna_trans(<<N:8, Rest/binary>>, <<Trans/binary>>) ->
-    rna_trans(Rest, <<Trans/binary, N>>).
 
 % Counting Nucleotides
 % http://rosalind.info/problems/dna/
